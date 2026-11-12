@@ -52,32 +52,41 @@ async function getChampionNames() {
   return championNames;
 }
 
+// TEST ENDPOINT - isolateaza problema
+app.get('/test', async (req, res) => {
+  const info = {
+    keySet: !!API_KEY,
+    keyLength: API_KEY ? API_KEY.length : 0,
+    keyStart: API_KEY ? API_KEY.substring(0, 10) : 'EMPTY'
+  };
+  res.json(info);
+});
+
 app.get('/pro', async (req, res) => {
   try {
     if (Date.now() - proListLastFetch > CACHE_MS) await fetchProList();
 
     if (!cachedPuuid) {
-      console.log('Fetching PUUID for:', RIOT_ID, '#', TAG);
-      const accRes = await fetch(
-        `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`,
-        { headers: { 'X-Riot-Token': API_KEY } }
-      );
+      console.log('STEP 1: Fetching PUUID');
+      const url = `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`;
+      console.log('URL:', url);
+      const accRes = await fetch(url, { headers: { 'X-Riot-Token': API_KEY } });
       console.log('PUUID STATUS:', accRes.status);
+      const accText = await accRes.text();
+      console.log('PUUID RESPONSE:', accText.substring(0, 200));
       if (!accRes.ok) {
-        const errText = await accRes.text();
-        console.log('PUUID ERROR:', errText.substring(0, 200));
-        return res.send('Error: ' + accRes.status);
+        return res.send('Riot Error ' + accRes.status + ': ' + accText.substring(0, 100));
       }
-      const accData = await accRes.json();
+      const accData = JSON.parse(accText);
       cachedPuuid = accData.puuid;
-      console.log('PUUID OK:', cachedPuuid);
+      console.log('PUUID OK');
     }
 
+    console.log('STEP 2: Fetching spectator');
     const specRes = await fetch(
       `${BASE}/lol/spectator/v5/active-games/by-puuid/${cachedPuuid}`,
       { headers: { 'X-Riot-Token': API_KEY } }
     );
-
     console.log('SPECTATOR STATUS:', specRes.status);
 
     if (specRes.status === 404) {
@@ -111,22 +120,4 @@ app.get('/pro', async (req, res) => {
 
     let result = `TF Blade: ${myChamp}`;
     if (allies.length > 0) {
-      result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
-    }
-    if (enemies.length > 0) {
-      result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
-    }
-    if (allies.length === 0 && enemies.length === 0) {
-      result += ' | No pro players in game';
-    }
-
-    res.send(result);
-  } catch (e) {
-    console.error('CATCH:', e.message);
-    res.send('Error: ' + e.message);
-  }
-});
-
-fetchProList();
-
-app.listen(3000, () => console.log('Running'));   
+      result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] ($   
