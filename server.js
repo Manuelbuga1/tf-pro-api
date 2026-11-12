@@ -19,17 +19,27 @@ const PROS_HEADERS = {
   'Referer': 'https://www.trackingthepros.com/players'
 };
 
+let currentGame = {
+  myChamp: '',
+  allies: [],
+  enemies: [],
+  pros: []
+};
+
 async function fetchProList() {
   try {
     const res = await fetch(PROS_URL, { headers: PROS_HEADERS });
     const data = await res.json();
     const arr = data.data || [];
+    console.log('FIRST PLAYER KEYS:', Object.keys(arr[0]));
+    console.log('FIRST PLAYER FULL:', JSON.stringify(arr[0]).substring(0, 500));
     const newList = {};
     for (const p of arr) {
       if (p.name) {
         newList[p.name.toLowerCase()] = {
           name: p.name,
-          position: p.position || ''
+          position: p.position || '',
+          tagline: p.tagline || p.tag || p.game_tag || ''
         };
       }
     }
@@ -52,7 +62,70 @@ async function getChampionNames() {
   return championNames;
 }
 
+// === SET CHAMPS ===
+app.get('/setchamps', async (req, res) => {
+  const data = req.query.data || '';
+  const parts = data.split('|').map(s => s.trim());
+
+  if (parts.length === 1) {
+    const champs = parts[0].split(',').map(c => c.trim()).filter(Boolean);
+    currentGame.myChamp = champs[0] || '';
+    currentGame.allies = champs.slice(1);
+    currentGame.enemies = [];
+  } else if (parts.length === 2) {
+    const allies = parts[0].split(',').map(c => c.trim()).filter(Boolean);
+    const enemies = parts[1].split(',').map(c => c.trim()).filter(Boolean);
+    currentGame.myChamp = allies[0] || '';
+    currentGame.allies = allies.slice(1);
+    currentGame.enemies = enemies;
+  } else {
+    return res.send('Invalid format. Use: Ally1, Ally2, Ally3, Ally4, Ally5 | Enemy1, Enemy2, Enemy3, Enemy4, Enemy5');
+  }
+
+  currentGame.pros = [];
+  res.send(`Champions set: ${currentGame.myChamp} | ${currentGame.allies.join(', ')} vs ${currentGame.enemies.join(', ')}`);
+});
+
+// === SET PROS ===
+app.get('/setpro', async (req, res) => {
+  const data = req.query.data || '';
+  const entries = data.split(',').map(e => e.trim()).filter(Boolean);
+  const pros = [];
+  for (const entry of entries) {
+    const [name, champ] = entry.split(':').map(s => s.trim());
+    if (name) {
+      const proInfo = proList[name.toLowerCase()];
+      pros.push({
+        name: name,
+        champ: champ || '',
+        position: proInfo ? proInfo.position : ''
+      });
+    }
+  }
+  currentGame.pros = pros;
+  res.send('Pro players set: ' + pros.map(p => `${p.name} (${p.champ})`).join(', '));
+});
+
+// === CLEAR ===
+app.get('/clear', async (req, res) => {
+  currentGame = { myChamp: '', allies: [], enemies: [], pros: [] };
+  res.send('Game cleared');
+});
+
+// === PRO ===
 app.get('/pro', async (req, res) => {
+  if (currentGame.myChamp) {
+    let result = `TF Blade: ${currentGame.myChamp}`;
+    if (currentGame.allies.length > 0) result += ` | Team: ${currentGame.allies.join(', ')}`;
+    if (currentGame.enemies.length > 0) result += ` | Enemies: ${currentGame.enemies.join(', ')}`;
+    if (currentGame.pros.length > 0) {
+      result += ` | PRO: ${currentGame.pros.map(p => `${p.name}${p.position ? ' [' + p.position + ']' : ''} (${p.champ})`).join(', ')}`;
+    } else {
+      result += ' | No pro players identified';
+    }
+    return res.send(result);
+  }
+
   try {
     if (Date.now() - proListLastFetch > CACHE_MS) await fetchProList();
 
@@ -61,9 +134,7 @@ app.get('/pro', async (req, res) => {
         `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`,
         { headers: { 'X-Riot-Token': API_KEY } }
       );
-      if (!accRes.ok) {
-        return res.send('Riot API error: ' + accRes.status);
-      }
+      if (!accRes.ok) return res.send('Riot API error: ' + accRes.status);
       const accData = await accRes.json();
       cachedPuuid = accData.puuid;
     }
@@ -73,15 +144,9 @@ app.get('/pro', async (req, res) => {
       { headers: { 'X-Riot-Token': API_KEY } }
     );
 
-    if (specRes.status === 404) {
-      return res.send('Not in a game right now');
-    }
-    if (specRes.status === 429) {
-      return res.send('Rate limited, try again in a few seconds');
-    }
-    if (!specRes.ok) {
-      return res.send('Spectator API error: ' + specRes.status);
-    }
+    if (specRes.status === 404) return res.send('Not in a game right now');
+    if (specRes.status === 429) return res.send('Rate limited, try again in a few seconds');
+    if (!specRes.ok) return res.send('Spectator API error: ' + specRes.status);
 
     const game = await specRes.json();
     const names = await getChampionNames();
@@ -89,7 +154,6 @@ app.get('/pro', async (req, res) => {
     if (!me) return res.send('Not in a game right now');
 
     const myTeam = me.teamId;
-    const myChamp = names[me.championId] || '???';
     const allies = [];
     const enemies = [];
 
@@ -98,31 +162,19 @@ app.get('/pro', async (req, res) => {
       const gameName = p.riotId?.gameName || '';
       const pro = proList[gameName.toLowerCase()];
       if (pro) {
-        const entry = {
-          name: pro.name,
-          position: pro.position,
-          champ: names[p.championId] || '???'
-        };
+        const entry = { name: pro.name, position: pro.position, champ: names[p.championId] || '???' };
         if (p.teamId === myTeam) allies.push(entry);
         else enemies.push(entry);
       }
     }
 
-    let result = `TF Blade: ${myChamp}`;
-    if (allies.length > 0) {
-      result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
-    }
-    if (enemies.length > 0) {
-      result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
-    }
-    if (allies.length === 0 && enemies.length === 0) {
-      result += ' | No pro players in game';
-    }
-
-    res.send(result);
+    let result = `TF Blade: ${names[me.championId] || '???'}`;
+    if (allies.length > 0) result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
+    if (enemies.length > 0) result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
+    if (allies.length === 0 && enemies.length === 0) result += ' | No pro players in game';
+    return res.send(result);
   } catch (e) {
-    console.error('Error:', e.message);
-    res.send('Error: ' + e.message);
+    return res.send('Error: ' + e.message);
   }
 });
 
