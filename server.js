@@ -57,12 +57,20 @@ app.get('/pro', async (req, res) => {
     if (Date.now() - proListLastFetch > CACHE_MS) await fetchProList();
 
     if (!cachedPuuid) {
+      console.log('Fetching PUUID for:', RIOT_ID, '#', TAG);
       const accRes = await fetch(
         `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`,
         { headers: { 'X-Riot-Token': API_KEY } }
       );
-      const { puuid } = await accRes.json();
-      cachedPuuid = puuid;
+      console.log('PUUID STATUS:', accRes.status);
+      if (!accRes.ok) {
+        const errText = await accRes.text();
+        console.log('PUUID ERROR:', errText.substring(0, 200));
+        return res.send('Error: ' + accRes.status);
+      }
+      const accData = await accRes.json();
+      cachedPuuid = accData.puuid;
+      console.log('PUUID OK:', cachedPuuid);
     }
 
     const specRes = await fetch(
@@ -70,14 +78,16 @@ app.get('/pro', async (req, res) => {
       { headers: { 'X-Riot-Token': API_KEY } }
     );
 
+    console.log('SPECTATOR STATUS:', specRes.status);
+
     if (specRes.status === 404) {
-      return res.send('Nu e in meci acum');
+      return res.send('Not in a game right now');
     }
 
     const game = await specRes.json();
     const names = await getChampionNames();
     const me = game.participants.find(p => p.puuid === cachedPuuid);
-    if (!me) return res.send('Nu e in meci acum');
+    if (!me) return res.send('Not in a game right now');
 
     const myTeam = me.teamId;
     const myChamp = names[me.championId] || '???';
@@ -101,18 +111,19 @@ app.get('/pro', async (req, res) => {
 
     let result = `TF Blade: ${myChamp}`;
     if (allies.length > 0) {
-      result += ` | Aliați PRO: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
+      result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
     }
     if (enemies.length > 0) {
-      result += ` | Inamici PRO: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
+      result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
     }
     if (allies.length === 0 && enemies.length === 0) {
-      result += ' | Fără pro players în meci';
+      result += ' | No pro players in game';
     }
 
     res.send(result);
   } catch (e) {
-    res.send('Eroare la fetch');
+    console.error('CATCH:', e.message);
+    res.send('Error: ' + e.message);
   }
 });
 
