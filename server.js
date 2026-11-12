@@ -84,7 +84,7 @@ app.get('/pro', async (req, res) => {
 
     console.log('STEP 2: Fetching spectator');
     const specRes = await fetch(
-      `${BASE}/lol/spectator/v5/active-games/by-puuid/${cachedPuuid}`,
+      `${BASE}/lol/spectator/v5/active-games/by-summoner/${cachedPuuid}`,
       { headers: { 'X-Riot-Token': API_KEY } }
     );
     console.log('SPECTATOR STATUS:', specRes.status);
