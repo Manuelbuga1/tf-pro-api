@@ -120,4 +120,21 @@ app.get('/pro', async (req, res) => {
 
     let result = `TF Blade: ${myChamp}`;
     if (allies.length > 0) {
-      result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] ($   
+      result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
+    }
+    if (enemies.length > 0) {
+      result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
+    }
+    if (allies.length === 0 && enemies.length === 0) {
+      result += ' | No pro players in game';
+    }
+
+    res.send(result);
+  } catch (e) {
+    console.error('CATCH:', e.message);
+    res.send('Error: ' + e.message);
+  }
+});
+
+fetchProList();
+app.listen(3000, () => console.log('Running'));   
