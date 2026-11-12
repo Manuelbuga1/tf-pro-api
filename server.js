@@ -52,45 +52,35 @@ async function getChampionNames() {
   return championNames;
 }
 
-// TEST ENDPOINT - isolateaza problema
-app.get('/test', async (req, res) => {
-  const info = {
-    keySet: !!API_KEY,
-    keyLength: API_KEY ? API_KEY.length : 0,
-    keyStart: API_KEY ? API_KEY.substring(0, 10) : 'EMPTY'
-  };
-  res.json(info);
-});
-
 app.get('/pro', async (req, res) => {
   try {
     if (Date.now() - proListLastFetch > CACHE_MS) await fetchProList();
 
     if (!cachedPuuid) {
-      console.log('STEP 1: Fetching PUUID');
-      const url = `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`;
-      console.log('URL:', url);
-      const accRes = await fetch(url, { headers: { 'X-Riot-Token': API_KEY } });
-      console.log('PUUID STATUS:', accRes.status);
-      const accText = await accRes.text();
-      console.log('PUUID RESPONSE:', accText.substring(0, 200));
+      const accRes = await fetch(
+        `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`,
+        { headers: { 'X-Riot-Token': API_KEY } }
+      );
       if (!accRes.ok) {
-        return res.send('Riot Error ' + accRes.status + ': ' + accText.substring(0, 100));
+        return res.send('Riot API error: ' + accRes.status);
       }
-      const accData = JSON.parse(accText);
+      const accData = await accRes.json();
       cachedPuuid = accData.puuid;
-      console.log('PUUID OK');
     }
 
-    console.log('STEP 2: Fetching spectator');
     const specRes = await fetch(
       `${BASE}/lol/spectator/v5/active-games/by-summoner/${cachedPuuid}`,
       { headers: { 'X-Riot-Token': API_KEY } }
     );
-    console.log('SPECTATOR STATUS:', specRes.status);
 
     if (specRes.status === 404) {
       return res.send('Not in a game right now');
+    }
+    if (specRes.status === 429) {
+      return res.send('Rate limited, try again in a few seconds');
+    }
+    if (!specRes.ok) {
+      return res.send('Spectator API error: ' + specRes.status);
     }
 
     const game = await specRes.json();
@@ -131,7 +121,7 @@ app.get('/pro', async (req, res) => {
 
     res.send(result);
   } catch (e) {
-    console.error('CATCH:', e.message);
+    console.error('Error:', e.message);
     res.send('Error: ' + e.message);
   }
 });
