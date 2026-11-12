@@ -3,7 +3,7 @@ const app = express();
 
 const API_KEY = process.env.RIOT_API_KEY;
 const RIOT_ID = '十ＴＨＡＮＯＳ十';
-const TAG = 'GOD';
+const TAG = 'god';
 const BASE = 'https://na1.api.riotgames.com';
 const ACCOUNTS_BASE = 'https://americas.api.riotgames.com';
 const PROS_URL = 'https://www.trackingthepros.com/d/list_players';
