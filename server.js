@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const app = express();
 
@@ -8,16 +7,12 @@ const TAG = '133';
 const BASE = 'https://na1.api.riotgames.com';
 const ACCOUNTS_BASE = 'https://americas.api.riotgames.com';
 const PROS_URL = 'https://www.trackingthepros.com/d/list_players';
-const TEAMS_URL = 'https://www.trackingthepros.com/d/list_teams';
 
 let cachedPuuid = null;
 let proList = {};
 let proListLastFetch = 0;
-let teamMap = {};
-let teamMapLastFetch = 0;
 const CACHE_MS = 30 * 60 * 1000;
 
-// Headers comune pentru trackingthepros
 const PROS_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'application/json',
@@ -34,7 +29,6 @@ async function fetchProList() {
       if (p.name) {
         newList[p.name.toLowerCase()] = {
           name: p.name,
-          team_id: p.team_id || null,
           position: p.position || ''
         };
       }
@@ -44,33 +38,6 @@ async function fetchProList() {
     console.log(`Pro list: ${Object.keys(proList).length} players`);
   } catch (e) {
     console.error('Pro list error:', e.message);
-  }
-}
-
-async function fetchTeamMap() {
-  try {
-    const res = await fetch(TEAMS_URL, { headers: PROS_HEADERS });
-    const text = await res.text();
-    console.log('TEAMS STATUS:', res.status);
-    console.log('TEAMS FIRST 300:', text.substring(0, 300));
-
-    const data = JSON.parse(text);
-    const arr = data.data || data.teams || (Array.isArray(data) ? data : []);
-    console.log('TEAMS ARRAY LENGTH:', arr.length);
-
-    const newMap = {};
-    for (const t of arr) {
-      const id = t.id || t.team_id;
-      const name = t.name || t.team_name || t.tag || '';
-      if (id && name) {
-        newMap[id] = name;
-      }
-    }
-    teamMap = newMap;
-    teamMapLastFetch = Date.now();
-    console.log(`Team map: ${Object.keys(teamMap).length} teams`);
-  } catch (e) {
-    console.error('Team map error:', e.message);
   }
 }
 
@@ -85,14 +52,9 @@ async function getChampionNames() {
   return championNames;
 }
 
-function getTeamName(teamId) {
-  return teamMap[teamId] || teamMap[String(teamId)] || '';
-}
-
 app.get('/pro', async (req, res) => {
   try {
     if (Date.now() - proListLastFetch > CACHE_MS) await fetchProList();
-    if (Date.now() - teamMapLastFetch > CACHE_MS) await fetchTeamMap();
 
     if (!cachedPuuid) {
       const accRes = await fetch(
@@ -127,10 +89,8 @@ app.get('/pro', async (req, res) => {
       const gameName = p.riotId?.gameName || '';
       const pro = proList[gameName.toLowerCase()];
       if (pro) {
-        const teamName = getTeamName(pro.team_id);
         const entry = {
           name: pro.name,
-          team: teamName || 'Free',
           position: pro.position,
           champ: names[p.championId] || '???'
         };
@@ -141,10 +101,10 @@ app.get('/pro', async (req, res) => {
 
     let result = `TF Blade: ${myChamp}`;
     if (allies.length > 0) {
-      result += ` | Aliați PRO: ${allies.map(a => `${a.name} [${a.team}] (${a.champ})`).join(', ')}`;
+      result += ` | Aliați PRO: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
     }
     if (enemies.length > 0) {
-      result += ` | Inamici PRO: ${enemies.map(e => `${e.name} [${e.team}] (${e.champ})`).join(', ')}`;
+      result += ` | Inamici PRO: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
     }
     if (allies.length === 0 && enemies.length === 0) {
       result += ' | Fără pro players în meci';
@@ -157,6 +117,5 @@ app.get('/pro', async (req, res) => {
 });
 
 fetchProList();
-fetchTeamMap();
 
 app.listen(3000, () => console.log('Running'));   
