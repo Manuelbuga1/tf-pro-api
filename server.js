@@ -20,14 +20,31 @@ const PRO_CACHE_MS = 30 * 60 * 1000;
 async function fetchProList() {
   try {
     const res = await fetch(PROS_URL, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.trackingthepros.com/players'
+      }
     });
-    const data = await res.json();
+
+    const text = await res.text();
+    console.log('PROS STATUS:', res.status);
+    console.log('PROS FIRST 300:', text.substring(0, 300));
+
+    const data = JSON.parse(text);
+    console.log('PROS TYPE:', typeof data, 'KEYS:', Object.keys(data));
+
+    const arr = data.data || data.players || (Array.isArray(data) ? data : []);
+    console.log('PROS ARRAY LENGTH:', arr.length);
+
     const newList = {};
-    // data.data e array de obiecte cu { name, team, role, current, ... }
-    for (const p of data.data) {
-      if (p.name && p.team) {
-        newList[p.name.toLowerCase()] = { name: p.name, team: p.team, role: p.role };
+    for (const p of arr) {
+      if (p.name) {
+        newList[p.name.toLowerCase()] = {
+          name: p.name,
+          team: p.team || p.current || 'Free',
+          role: p.role || ''
+        };
       }
     }
     proList = newList;
@@ -35,7 +52,6 @@ async function fetchProList() {
     console.log(`Pro list updated: ${Object.keys(proList).length} players`);
   } catch (e) {
     console.error('Failed to fetch pro list:', e.message);
-    // Păstrăm lista veche dacă eșuează
   }
 }
 
@@ -53,7 +69,6 @@ async function getChampionNames() {
 
 app.get('/pro', async (req, res) => {
   try {
-    // Reîncarcă lista de pro dacă e expirată
     if (Date.now() - proListLastFetch > PRO_CACHE_MS) {
       await fetchProList();
     }
@@ -75,7 +90,7 @@ app.get('/pro', async (req, res) => {
     );
 
     if (specRes.status === 404) {
-      return res.send('Nu e în meci acum');
+      return res.send('Nu e in meci acum');
     }
 
     const game = await specRes.json();
@@ -83,7 +98,7 @@ app.get('/pro', async (req, res) => {
 
     // 3. Găsește echipa TF Blade
     const me = game.participants.find(p => p.puuid === cachedPuuid);
-    if (!me) return res.send('Nu e în meci acum');
+    if (!me) return res.send('Nu e in meci acum');
 
     const myTeam = me.teamId;
     const myChamp = names[me.championId] || '???';
@@ -126,7 +141,6 @@ app.get('/pro', async (req, res) => {
   }
 });
 
-// La pornire, încarcă lista de pro
 fetchProList();
 
 app.listen(3000, () => console.log('Running'));   
