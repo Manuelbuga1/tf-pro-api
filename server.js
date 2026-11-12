@@ -28,16 +28,19 @@ let currentGame = {
   scanDone: false
 };
 
-// === FETCH PRO LIST ===
 async function fetchProList() {
   try {
     const res = await fetch(PROS_URL, { headers: PROS_HEADERS });
     const data = await res.json();
     const arr = data.data || [];
 
-    if (arr.length > 0) {
-      console.log('PRO KEYS:', Object.keys(arr[0]).join(', '));
-      console.log('PRO SAMPLE:', JSON.stringify(arr[0]).substring(0, 600));
+    // DEBUG: vezi ce e in player_accounts
+    const withAccounts = arr.filter(p => p.player_accounts);
+    if (withAccounts.length > 0) {
+      console.log('PLAYER_ACCOUNTS SAMPLE:', JSON.stringify(withAccounts[0].player_accounts).substring(0, 500));
+      console.log('PLAYER_ACCOUNTS TYPE:', typeof withAccounts[0].player_accounts);
+    } else {
+      console.log('NO player_accounts found in any player');
     }
 
     const newList = {};
@@ -46,9 +49,9 @@ async function fetchProList() {
         newList[p.name.toLowerCase()] = {
           name: p.name,
           position: p.position || '',
-          tagline: p.tagline || p.tag || p.game_tag || p.riot_tag || '',
+          team_name: p.team_name || '',
           current_region: p.current_region || '',
-          online: p.online || false
+          player_accounts: p.player_accounts || null
         };
       }
     }
@@ -60,7 +63,6 @@ async function fetchProList() {
   }
 }
 
-// === CHAMPION NAMES ===
 let championNames = {};
 async function getChampionNames() {
   if (Object.keys(championNames).length > 0) return championNames;
@@ -72,16 +74,18 @@ async function getChampionNames() {
   return championNames;
 }
 
-// === PUUID CACHE ===
 let puuidCache = {};
 async function getPuuid(gameName, tagline) {
   const key = gameName.toLowerCase() + '#' + tagline.toLowerCase();
   if (puuidCache[key]) return puuidCache[key];
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     const res = await fetch(
       `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagline)}`,
-      { headers: { 'X-Riot-Token': API_KEY } }
+      { headers: { 'X-Riot-Token': API_KEY }, signal: controller.signal }
     );
+    clearTimeout(timeout);
     if (res.ok) {
       const d = await res.json();
       puuidCache[key] = d.puuid;
@@ -93,52 +97,27 @@ async function getPuuid(gameName, tagline) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// === FLEXIBLE MATCHING ===
-// Returns: 'our_team', 'enemy_team', or null
-// Works even if some participants are missing (streamer mode)
 function matchGame(participants, proPuuid, names, myChamps, enemyChamps) {
   const proInGame = participants.find(p => p.puuid === proPuuid);
   if (!proInGame) return null;
 
   const proTeamId = proInGame.teamId;
-
-  // Get champions we can actually see
   const proTeamChamps = participants
     .filter(p => p.teamId === proTeamId)
     .map(p => (names[p.championId] || '').toLowerCase())
     .filter(c => c !== '');
-
   const enemyTeamChamps = participants
     .filter(p => p.teamId !== proTeamId)
     .map(p => (names[p.championId] || '').toLowerCase())
     .filter(c => c !== '');
 
-  // Check pro's team against our allies
-  const proTeamMatchesAllies = proTeamChamps.length > 0 &&
-    proTeamChamps.every(c => myChamps.includes(c));
-
-  // Check pro's team against our enemies
-  const proTeamMatchesEnemies = proTeamChamps.length > 0 &&
-    proTeamChamps.every(c => enemyChamps.includes(c));
-
-  // Check enemy team against our allies
-  const enemyTeamMatchesAllies = enemyTeamChamps.length > 0 &&
-    enemyTeamChamps.every(c => myChamps.includes(c));
-
-  // Check enemy team against our enemies
-  const enemyTeamMatchesEnemies = enemyTeamChamps.length > 0 &&
-    enemyTeamChamps.every(c => enemyChamps.includes(c));
-
-  // Determine which side the pro is on
-  if (proTeamMatchesAllies) return 'our_team';
-  if (proTeamMatchesEnemies) return 'enemy_team';
-  if (enemyTeamMatchesAllies) return 'enemy_team'; // pro is on enemy side
-  if (enemyTeamMatchesEnemies) return 'our_team'; // pro is on our side
-
+  if (proTeamChamps.length > 0 && proTeamChamps.every(c => myChamps.includes(c))) return 'our_team';
+  if (proTeamChamps.length > 0 && proTeamChamps.every(c => enemyChamps.includes(c))) return 'enemy_team';
+  if (enemyTeamChamps.length > 0 && enemyTeamChamps.every(c => myChamps.includes(c))) return 'enemy_team';
+  if (enemyTeamChamps.length > 0 && enemyTeamChamps.every(c => enemyChamps.includes(c))) return 'our_team';
   return null;
 }
 
-// === SCAN FOR GAME ===
 async function scanForGame() {
   if (currentGame.scanning) return;
   if (!currentGame.myChamp) return;
@@ -151,22 +130,51 @@ async function scanForGame() {
   const myChamps = [currentGame.myChamp, ...currentGame.allies].map(c => c.toLowerCase());
   const enemyChamps = currentGame.enemies.map(c => c.toLowerCase());
 
-  // Get NA online pros with tagline
   const naPros = [];
   for (const key in proList) {
     const p = proList[key];
-    if (p.current_region === 'NA' && p.online && p.tagline) {
+    if (p.current_region === 'NA' && p.player_accounts) {
       naPros.push(p);
     }
   }
-  console.log(`Scanning ${naPros.length} NA online pros with tagline...`);
+  console.log(`Scanning ${naPros.length} NA pros with player_accounts...`);
+
+  const SCAN_TIMEOUT = 45000; // 45 sec max
+  const startTime = Date.now();
 
   for (const pro of naPros) {
+    if (Date.now() - startTime > SCAN_TIMEOUT) {
+      console.log('Scan timeout reached, stopping.');
+      break;
+    }
+
     try {
-      const puuid = await getPuuid(pro.name, pro.tagline);
+      // Parse player_accounts to get gameName + tagline
+      let gameName = null;
+      let tagline = null;
+
+      if (typeof pro.player_accounts === 'string') {
+        // Might be "Name#TAG" format
+        const parts = pro.player_accounts.split('#');
+        if (parts.length === 2) {
+          gameName = parts[0].trim();
+          tagline = parts[1].trim();
+        }
+      } else if (Array.isArray(pro.player_accounts) && pro.player_accounts.length > 0) {
+        const acc = pro.player_accounts[0];
+        gameName = acc.gameName || acc.name || pro.name;
+        tagline = acc.tagLine || acc.tag || '';
+      } else if (typeof pro.player_accounts === 'object' && pro.player_accounts !== null) {
+        gameName = pro.player_accounts.gameName || pro.player_accounts.name || pro.name;
+        tagline = pro.player_accounts.tagLine || pro.player_accounts.tag || '';
+      }
+
+      if (!gameName || !tagline) continue;
+
+      const puuid = await getPuuid(gameName, tagline);
       if (!puuid) continue;
 
-      await sleep(500);
+      await sleep(200); // reduced from 500ms
 
       const specRes = await fetch(
         `${BASE}/lol/spectator/v5/active-games/by-summoner/${puuid}`,
@@ -182,7 +190,6 @@ async function scanForGame() {
 
       const game = await specRes.json();
       const participants = game.participants || [];
-
       if (participants.length < 3) continue;
 
       const side = matchGame(participants, puuid, names, myChamps, enemyChamps);
@@ -191,10 +198,11 @@ async function scanForGame() {
         currentGame.pros.push({
           name: pro.name,
           position: pro.position,
+          team: pro.team_name || '',
           side: side,
           champ: names[proInGame.championId] || '???'
         });
-        console.log(`Found pro: ${pro.name} [${pro.position}] on ${side} team (${names[proInGame.championId]})`);
+        console.log(`Found pro: ${pro.name} [${pro.team_name}] on ${side} team (${names[proInGame.championId]})`);
       }
 
     } catch (e) { /* ignore */ }
@@ -205,7 +213,6 @@ async function scanForGame() {
   console.log(`Scan done. Found ${currentGame.pros.length} pro players.`);
 }
 
-// === SET CHAMPS ===
 app.get('/setchamps', async (req, res) => {
   const data = req.query.data || '';
   const parts = data.split('|').map(s => s.trim());
@@ -222,17 +229,16 @@ app.get('/setchamps', async (req, res) => {
     currentGame.allies = allies.slice(1);
     currentGame.enemies = enemies;
   } else {
-    return res.send('Invalid format. Use: Ally1, Ally2, Ally3, Ally4, Ally5 | Enemy1, Enemy2, Enemy3, Enemy4, Enemy5');
+    return res.send('Invalid format');
   }
 
   currentGame.pros = [];
   currentGame.scanDone = false;
   scanForGame();
 
-  res.send(`Champions set: ${currentGame.myChamp} | ${currentGame.allies.join(', ')} vs ${currentGame.enemies.join(', ')} - Scanning for pros...`);
+  res.send(`Champions set: ${currentGame.myChamp} | ${currentGame.allies.join(', ')} vs ${currentGame.enemies.join(', ')} - Scanning...`);
 });
 
-// === SET PROS (manual) ===
 app.get('/setpro', async (req, res) => {
   const data = req.query.data || '';
   const entries = data.split(',').map(e => e.trim()).filter(Boolean);
@@ -245,6 +251,7 @@ app.get('/setpro', async (req, res) => {
         name: name,
         champ: champ || '',
         position: proInfo ? proInfo.position : '',
+        team: proInfo ? proInfo.team_name : '',
         side: 'unknown'
       });
     }
@@ -254,13 +261,11 @@ app.get('/setpro', async (req, res) => {
   res.send('Pro players set: ' + pros.map(p => `${p.name} (${p.champ})`).join(', '));
 });
 
-// === CLEAR ===
 app.get('/clear', async (req, res) => {
   currentGame = { myChamp: '', allies: [], enemies: [], pros: [], scanning: false, scanDone: false };
   res.send('Game cleared');
 });
 
-// === PRO ===
 app.get('/pro', async (req, res) => {
   if (currentGame.myChamp) {
     let result = `TF Blade: ${currentGame.myChamp}`;
@@ -268,27 +273,24 @@ app.get('/pro', async (req, res) => {
     if (currentGame.enemies.length > 0) result += ` | Enemies: ${currentGame.enemies.join(', ')}`;
 
     if (currentGame.scanning) {
-      result += ' | Scanning for pro players...';
+      result += ' | Scanning...';
     } else if (currentGame.pros.length > 0) {
       const allies = currentGame.pros.filter(p => p.side === 'our_team');
       const enemies = currentGame.pros.filter(p => p.side === 'enemy_team');
       const unknown = currentGame.pros.filter(p => p.side === 'unknown');
-      if (allies.length > 0) result += ` | PRO Allies: ${allies.map(p => `${p.name} [${p.position}] (${p.champ})`).join(', ')}`;
-      if (enemies.length > 0) result += ` | PRO Enemies: ${enemies.map(p => `${p.name} [${p.position}] (${p.champ})`).join(', ')}`;
-      if (unknown.length > 0) result += ` | PRO: ${unknown.map(p => `${p.name} (${p.champ})`).join(', ')}`;
+      if (allies.length > 0) result += ` | PRO Allies: ${allies.map(p => `${p.name} [${p.team}] (${p.champ})`).join(', ')}`;
+      if (enemies.length > 0) result += ` | PRO Enemies: ${enemies.map(p => `${p.name} [${p.team}] (${p.champ})`).join(', ')}`;
+      if (unknown.length > 0) result += ` | PRO: ${unknown.map(p => `${p.name} [${p.team}] (${p.champ})`).join(', ')}`;
     } else if (currentGame.scanDone) {
-      result += ' | No pro players found in game';
+      result += ' | No pro players found';
     } else {
-      result += ' | Waiting for scan...';
+      result += ' | Waiting...';
     }
-
     return res.send(result);
   }
 
-  // No manual set - try Spectator API directly
   try {
     if (Date.now() - proListLastFetch > CACHE_MS) await fetchProList();
-
     if (!cachedPuuid) {
       const accRes = await fetch(
         `${ACCOUNTS_BASE}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(RIOT_ID)}/${TAG}`,
@@ -297,15 +299,13 @@ app.get('/pro', async (req, res) => {
       if (!accRes.ok) return res.send('Riot API error: ' + accRes.status);
       cachedPuuid = (await accRes.json()).puuid;
     }
-
     const specRes = await fetch(
       `${BASE}/lol/spectator/v5/active-games/by-summoner/${cachedPuuid}`,
       { headers: { 'X-Riot-Token': API_KEY } }
     );
-
     if (specRes.status === 404) return res.send('Not in a game right now');
     if (specRes.status === 429) return res.send('Rate limited, try again');
-    if (!specRes.ok) return res.send('Spectator API error: ' + specRes.status);
+    if (!specRes.ok) return res.send('Error: ' + specRes.status);
 
     const game = await specRes.json();
     const names = await getChampionNames();
@@ -320,15 +320,14 @@ app.get('/pro', async (req, res) => {
       const gameName = p.riotId?.gameName || '';
       const pro = proList[gameName.toLowerCase()];
       if (pro) {
-        const entry = { name: pro.name, position: pro.position, champ: names[p.championId] || '???' };
+        const entry = { name: pro.name, team: pro.team_name, champ: names[p.championId] || '???' };
         if (p.teamId === myTeam) allies.push(entry);
         else enemies.push(entry);
       }
     }
-
     let result = `TF Blade: ${names[me.championId] || '???'}`;
-    if (allies.length > 0) result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.position}] (${a.champ})`).join(', ')}`;
-    if (enemies.length > 0) result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.position}] (${e.champ})`).join(', ')}`;
+    if (allies.length > 0) result += ` | PRO Allies: ${allies.map(a => `${a.name} [${a.team}] (${a.champ})`).join(', ')}`;
+    if (enemies.length > 0) result += ` | PRO Enemies: ${enemies.map(e => `${e.name} [${e.team}] (${e.champ})`).join(', ')}`;
     if (allies.length === 0 && enemies.length === 0) result += ' | No pro players in game';
     return res.send(result);
   } catch (e) {
